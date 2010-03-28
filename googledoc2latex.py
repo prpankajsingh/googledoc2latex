@@ -5,8 +5,10 @@ import optparse, sys
 
 VERBOSE = 0
 
-htmlentitydefs.name2codepoint['nbsp'] = ord(" ")
-
+SETTINGS = dict(columnwidth = 1,
+                documentclass = 'IEEEtran',
+                documentoptions = 'doc,helv,longtable',
+                )
 
 def get_attr_value(attrs, key):
     for x,y in attrs:
@@ -14,18 +16,27 @@ def get_attr_value(attrs, key):
             return y
 
 class Figure:
-    def __init__(self, out_fd, url = ''):
+    def __init__(self, out_fd, url = '', base = ''):
         ## Create a valid filename
-        self.src = self.download_drawing(url)
+        self.src = self.download_drawing(url, base)
         self.caption = ''
         self.extra = ''
         self.out_fd = out_fd
 
-    def download_drawing(self, url):
+    def download_drawing(self, url, base):
         ## If its a google drawing we can just fetch it as pdf
         s = urlparse.urlsplit(url)
-        ext = "png"
-        if s.netloc == 'docs.google.com' and s.path == "/Drawing":
+        ext = ".png"
+        if not s.netloc:
+            q = urlparse.urlsplit(base)
+            new_url = "%s://%s/%s?%s" % (q.scheme,
+                                     q.netloc,
+                                     s.path, s.query)
+
+            filename =  re.sub("[:/\&?]","_", url) + ext
+            return self.fetch(filename, new_url)
+
+        elif s.netloc == 'docs.google.com' and s.path == "/Drawing":
             q = urlparse.parse_qs(s.query)
             url = "%s://%s/%s?%s" % (s.scheme,
                                      s.netloc,
@@ -36,18 +47,22 @@ class Figure:
                                      )
 
             filename = "figure_%s_%s.%s" % (q['drawingId'][0], q['drawingRev'][0], ext)
-            try:
-                fd = open(filename, "r")
-            except IOError:
-                f = urllib.urlopen(url)
-                data = f.read()
-                fd = open(filename,"w")
-                fd.write(data)
-                fd.close()
 
-            return filename
+            return self.fetch(filename, url)
 
         return re.sub("[:/\&?]","_",url)
+
+    def fetch(self, filename, url):
+        try:
+            fd = open(filename, "r")
+        except IOError:
+            f = urllib.urlopen(url)
+            data = f.read()
+            fd = open(filename,"w")
+            fd.write(data)
+            fd.close()
+
+        return filename
 
     def set_caption(self, caption):
         def update_extra(x):
@@ -63,14 +78,16 @@ class Figure:
         self.caption = caption
 
     def end(self):
+        args = dict(src=self.src, caption=self.caption, extra=self.extra)
+        args.update(SETTINGS)
         self.out_fd.write(r"""\begin{figure}[tb]
 \begin{center}
-\includegraphics[width=\columnwidth]{%s}
-\caption{%s}
-%s
+\includegraphics[width=%(columnwidth)s\columnwidth]{%(src)s}
+\caption{%(caption)s}
+%(extra)s
 \end{center}
 \end{figure}
-""" % (self.src, self.caption, self.extra))
+""" % args)
 
 class Table(Figure):
     name = "table"
@@ -160,12 +177,15 @@ class Handler:
     biblio_fd = None
     verb = False
     quote_mode = "''"
+    url = ''
+    comment = ''
 
-    def __init__(self, out_fd):
+    def __init__(self, out_fd, url):
         self.tables = []
         self.para = ''
         self.current_table = None
         self.out_fd = out_fd
+        self.url = url
 
     def start_table(self, attrs):
         t = Table(self.out_fd, attrs)
@@ -203,8 +223,26 @@ class Handler:
     def end_i(self, attrs):
         self.para += "}"
 
+    def emit_headers(self):
+        self.out_fd.write("""\\documentclass[%(documentoptions)s]{%(documentclass)s}
+    \\usepackage{graphicx}
+    \\usepackage{verbatim}
+
+""" % SETTINGS)
+
+        for option in ['affiliation','author']:
+            if SETTINGS.get(option):
+                self.out_fd.write("\\%s{%s}\n" % (option, SETTINGS[option]))
+
+        self.out_fd.write("\\begin{document}\n")
+
+    header = False
     def start_br(self, attrs):
         if self.emit:
+            if not self.header and re.search("[a-z]+",self.para):
+                self.emit_headers()
+                self.header = True
+
             if self.current_table and self.para:
                 self.current_table.set_caption(self.para)
                 self.current_table.end()
@@ -214,16 +252,28 @@ class Handler:
             else:
                 self.out_fd.write(self.para)
 
-            self.para = ''
+            self.para = '\n'
+        else:
+            if self.mode[-1]=='comment':
+                self.comment += "\n"
+            else:
+                self.para += "\n"
 
     def end_br(self, attrs): pass
 
     def end_font(self, attrs): pass
 
     def start_p(self, attrs):
+        self.para += "\n"
         self.start_br(attrs)
 
     def end_p(self, attrs): pass
+
+    def start_sup(self, attrs):
+        self.para += "$^{"
+
+    def end_sup(self, attrs):
+        self.para += "}$"
 
     def escape_latex_chars(self, data):
         """ Some characters are not allowed in latex modes.
@@ -243,9 +293,17 @@ class Handler:
 
         return re.sub('"', quote, data)
 
+    def parse_comment_settings(self, data):
+        for pattern in [r"\\([^\s]+)=([^\s]+)", r"\\([^\s]+)=\"([^\"]+)\"",
+                        r"\\([^\s]+)=\'([^\']+\')",]:
+            for match in re.finditer(pattern, data):
+                print "Setting %s = %s" % (match.group(1), match.group(2))
+                SETTINGS[match.group(1)] = match.group(2)
+
     def data(self, data):
         if self.mode[-1] == 'comment':
-            self.para += "\n%%%s" % data
+            self.comment += data
+            return
 
         m = re.search(r"\\bibliography\{([^\}]+)}", data)
         if m:
@@ -267,7 +325,6 @@ class Handler:
 
     def start_div(self, attrs):
         if get_attr_value(attrs, "id") == "doc-contents":
-            self.emit = True
             self.para = ''
 
     def end_div(self, attrs):
@@ -276,9 +333,14 @@ class Handler:
 
     def start_h1(self, attrs):
         self.para += r"\title{"
+        self.emit = True
 
     def end_h1(self, attrs):
-        self.para += "}\n\n\maketitle\n"
+        self.para += "}\n"
+        if SETTINGS.get('shorttitle'):
+            self.para+= "\shorttitle{%s}\n" % SETTINGS['shorttitle']
+
+        self.para +="\maketitle\n"
 
     def start_h2(self, attrs):
         self.para += "\section{"
@@ -319,7 +381,7 @@ class Handler:
 
     def start_img(self, attrs):
         src = get_attr_value(attrs, "src")
-        self.current_table = Figure(self.out_fd, src)
+        self.current_table = Figure(self.out_fd, src, base = self.url)
 
     def start_ol(self, attrs):
         self.para += r"""
@@ -352,13 +414,24 @@ class Handler:
     def end_span(self, attrs):
         if self.mode[-1] == 'comment':
             self.mode.pop(-1)
+            self.parse_comment_settings(self.comment)
+            for line in self.comment.splitlines():
+                self.para += "%%%s\n" % line
+
+            self.comment = ''
+
+name2codepoint = htmlentitydefs.name2codepoint
+name2codepoint['rsquo'] = ord('`')
+name2codepoint['lsquo'] = ord("'")
+name2codepoint['ndash'] = ord("-")
+name2codepoint['nbsp'] = ord(" ")
 
 class MyHTMLParser(HTMLParser):
     ## Tags for a stack
     tags = {}
 
-    def __init__(self, out_fd):
-        self.h = Handler(out_fd)
+    def __init__(self, out_fd, url):
+        self.h = Handler(out_fd, url)
         HTMLParser.__init__(self)
         self.out_fd = out_fd
 
@@ -404,20 +477,8 @@ for arg in args:
     f = urllib.urlopen(arg)
     data = f.read()
 
-    out_fd.write( r"""
-    %\documentclass{article}
-    \documentclass[12pt, conference]{IEEEtran}
-    %\documentclass[doc,helv,longtable,twocolumn]{apa}
-    \usepackage{graphicx}
-    \usepackage{verbatim}
-    \usepackage{cite}
-    \bibliographystyle{IEEEtran}
-
-    \begin{document}
-    """)
-
     try:
-        p = MyHTMLParser(out_fd)
+        p = MyHTMLParser(out_fd, arg)
         p.feed(data)
     except Exception, e:
         print e
