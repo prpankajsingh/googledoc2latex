@@ -227,10 +227,12 @@ class Handler:
         self.out_fd.write("""\\documentclass[%(documentoptions)s]{%(documentclass)s}
     \\usepackage{graphicx}
     \\usepackage{verbatim}
+    \\usepackage{setspace}
+
 
 """ % SETTINGS)
 
-        for option in ['affiliation','author']:
+        for option in ['affiliation','author','setstretch']:
             if SETTINGS.get(option):
                 self.out_fd.write("\\%s{%s}\n" % (option, SETTINGS[option]))
 
