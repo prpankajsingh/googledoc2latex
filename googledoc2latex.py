@@ -18,33 +18,38 @@ def get_attr_value(attrs, key):
 class Figure:
     def __init__(self, out_fd, url = '', base = ''):
         ## Create a valid filename
-        self.src = self.download_drawing(url, base)
+        try:
+            self.src = self.download_drawing(url, base)
+        except:
+            self.src = ''
         self.caption = ''
         self.extra = ''
         self.out_fd = out_fd
 
     def download_drawing(self, url, base):
+        if not url: return
         ## If its a google drawing we can just fetch it as pdf
         s = urlparse.urlsplit(url)
-        ext = ".png"
+        ext = "png"
         if not s.netloc:
             q = urlparse.urlsplit(base)
             new_url = "%s://%s/%s?%s" % (q.scheme,
                                      q.netloc,
                                      s.path, s.query)
 
-            filename =  re.sub("[:/\&?]","_", url) + ext
+            filename =  re.sub("[:/\&?.]","_", url) + ext
             return self.fetch(filename, new_url)
 
         elif s.netloc == 'docs.google.com' and s.path == "/Drawing":
             q = urlparse.parse_qs(s.query)
-            url = "%s://%s/%s?%s" % (s.scheme,
-                                     s.netloc,
+            #url = "%s://%s/%s?%s" % (s.scheme,
+            #                         s.netloc,
+            #                         s.path,
                                      #"drawings/export/%s" % ext,
-                                     "drawings/image",
-                                     "id=%s&w=600&h=600&rev=%s&ac=1" % (
-                    q['drawingId'][0], q['drawingRev'][0])
-                                     )
+                                     #"drawings/image",
+            #                         "drawingId=%s&w=600&h=600&drawingRev=%s&ac=1" % (
+            #        q['drawingId'][0], q['drawingRev'][0])
+            #                         )
 
             filename = "figure_%s_%s.%s" % (q['drawingId'][0], q['drawingRev'][0], ext)
 
@@ -56,6 +61,7 @@ class Figure:
         try:
             fd = open(filename, "r")
         except IOError:
+            print "Fetching %s from %s" % (filename, url)
             f = urllib.urlopen(url)
             data = f.read()
             fd = open(filename,"w")
@@ -188,12 +194,16 @@ class Handler:
         self.url = url
 
     def start_table(self, attrs):
+        ## Flush the current paragraph
+        self.start_br(attrs)
         t = Table(self.out_fd, attrs)
+        self.mode.append(t.type)
         self.tables.append(t)
         self.emitter = t.data
 
     def end_table(self, attrs):
         self.current_table = self.tables.pop(-1)
+        self.mode.pop(-1)
         self.emitter = None
 
     def start_td(self, attrs):
@@ -252,9 +262,9 @@ class Handler:
             elif self.emitter:
                 self.emitter("\n")
             else:
-                self.out_fd.write(self.para)
+                self.out_fd.write(self.para + "\n")
 
-            self.para = '\n'
+            self.para = ''
         else:
             if self.mode[-1]=='comment':
                 self.comment += "\n"
@@ -290,13 +300,13 @@ class Handler:
 
             return self.quote_mode
 
-        if self.mode[-1] == 'bibliography' or self.mode[-1] == "verbatim":
+        if self.verb or self.mode[-1] == 'bibliography' or self.mode[-1] == "verbatim":
             return data
 
         return re.sub('"', quote, data)
 
     def parse_comment_settings(self, data):
-        for pattern in [r"\\([^\s]+)=([^\s]+)", r"\\([^\s]+)=\"([^\"]+)\"",
+        for pattern in [r"\\([^\s]+)=([^\n]+)", r"\\([^\s]+)=\"([^\"]+)\"",
                         r"\\([^\s]+)=\'([^\']+\')",]:
             for match in re.finditer(pattern, data):
                 print "Setting %s = %s" % (match.group(1), match.group(2))
@@ -342,6 +352,9 @@ class Handler:
         if SETTINGS.get('shorttitle'):
             self.para+= "\shorttitle{%s}\n" % SETTINGS['shorttitle']
 
+        if SETTINGS.get('abstract'):
+            self.para += "\\abstract{%s}\n" % SETTINGS['abstract']
+
         self.para +="\maketitle\n"
 
     def start_h2(self, attrs):
@@ -368,8 +381,10 @@ class Handler:
             try:
                 self.tables[-1].type = "verbatim"
                 self.mode.append("verbatim")
+                self.verb = True
             except IndexError:
                 self.para += r"\verb|"
+                self.mode.append('verbatim')
                 self.verb = True
 
     def end_font(self, attrs):
