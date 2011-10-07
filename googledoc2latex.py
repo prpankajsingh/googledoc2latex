@@ -1,4 +1,5 @@
-import urllib, re, urlparse, htmlentitydefs
+import codec
+import urllib2, re, urlparse, htmlentitydefs
 from HTMLParser import HTMLParser
 import pdb
 import optparse, sys
@@ -6,8 +7,8 @@ import optparse, sys
 VERBOSE = 0
 
 SETTINGS = dict(columnwidth = 1,
-                documentclass = 'IEEEtran',
-                documentoptions = 'doc,helv,longtable',
+                documentclass = 'article',
+#                documentoptions = 'doc,helv,longtable',
                 )
 
 def get_attr_value(attrs, key):
@@ -40,7 +41,7 @@ class Figure:
             filename =  re.sub("[:/\&?.]","_", url) + ext
             return self.fetch(filename, new_url)
 
-        elif s.netloc == 'docs.google.com' and s.path == "/Drawing":
+        elif s.netloc == 'docs.google.com' and s.path in ["/Drawing", "/drawings/image"]:
             q = urlparse.parse_qs(s.query)
             #url = "%s://%s/%s?%s" % (s.scheme,
             #                         s.netloc,
@@ -50,8 +51,9 @@ class Figure:
             #                         "drawingId=%s&w=600&h=600&drawingRev=%s&ac=1" % (
             #        q['drawingId'][0], q['drawingRev'][0])
             #                         )
-
-            filename = "figure_%s_%s.%s" % (q['drawingId'][0], q['drawingRev'][0], ext)
+            drawingId = q.get('drawingId') or q.get('id')
+            drawingRev = q.get('drawingRev') or q.get('rev')
+            filename = "figure_%s_%s.%s" % (drawingId[0], drawingRev[0], ext)
 
             return self.fetch(filename, url)
 
@@ -61,8 +63,9 @@ class Figure:
         try:
             fd = open(filename, "r")
         except IOError:
-            print "Fetching %s from %s" % (filename, url)
-            f = urllib.urlopen(url)
+            #print "Fetching %s from %s" % (filename, url)
+            print "wget -O %s '%s'" % (filename, url)
+            f = urllib2.urlopen(url)
             data = f.read()
             fd = open(filename,"w")
             fd.write(data)
@@ -127,7 +130,7 @@ class Table(Figure):
         try:
             self.rows[self.y][self.x] = None
         except IndexError:
-            self.rows[self.y].append(None) 
+            self.rows[self.y].append(None)
 
         style=get_attr_value(attrs, "style")
         if style and "text-align:right" in style:
@@ -151,7 +154,7 @@ class Table(Figure):
 
     def data(self, data):
         if self.rows[self.y][self.x] is None:
-            self.rows[self.y][self.x] = '' 
+            self.rows[self.y][self.x] = ''
 
         self.rows[self.y][self.x] += data
 
@@ -176,7 +179,7 @@ class Table(Figure):
 \end{%s}
 """ % (self.type, self.name))
 
-class Handler:
+class Handler(object):
     emit = False
     emitter = None
     mode = ['normal']
@@ -188,7 +191,7 @@ class Handler:
 
     def __init__(self, out_fd, url):
         self.tables = []
-        self.para = ''
+        self.para = u''
         self.current_table = None
         self.out_fd = out_fd
         self.url = url
@@ -213,10 +216,11 @@ class Handler:
         self.tables[-1].start_tr(attrs)
 
     def end_td(self, attrs):
+        self.para = re.sub("[\x80-\xFF]","", self.para)
         if self.emitter:
             self.emitter(self.para)
         self.tables[-1].end_td(attrs)
-        self.para = ''
+        self.para = u''
 
     def end_tr(self, attrs):
         self.tables[-1].end_tr(attrs)
@@ -234,11 +238,15 @@ class Handler:
         self.para += "}"
 
     def emit_headers(self):
-        self.out_fd.write("""\\documentclass[%(documentoptions)s]{%(documentclass)s}
-    \\usepackage{graphicx}
-    \\usepackage{verbatim}
-    \\usepackage{setspace}
+        self.out_fd.write("""
+\\documentclass[%(documentoptions)s]{%(documentclass)s}
+\\usepackage{graphicx}
+\\usepackage{verbatim}
+\\usepackage{setspace}
+\\usepackage{url}
+\\usepackage[utf8]{inputenc}
 
+\\bibliographystyle{%(bibstyle)s}
 
 """ % SETTINGS)
 
@@ -247,6 +255,10 @@ class Handler:
                 self.out_fd.write("\\%s{%s}\n" % (option, SETTINGS[option]))
 
         self.out_fd.write("\\begin{document}\n")
+        self.out_fd.write("""
+\\title{%(title)s}
+\\maketitle
+""" % SETTINGS)
 
     header = False
     def start_br(self, attrs):
@@ -262,9 +274,10 @@ class Handler:
             elif self.emitter:
                 self.emitter("\n")
             else:
+                self.para = re.sub("[\x80-\xFF]","", self.para)
                 self.out_fd.write(self.para + "\n")
 
-            self.para = ''
+            self.para = u''
         else:
             if self.mode[-1]=='comment':
                 self.comment += "\n"
@@ -276,8 +289,9 @@ class Handler:
     def end_font(self, attrs): pass
 
     def start_p(self, attrs):
-        self.para += "\n"
-        self.start_br(attrs)
+        if self.para:
+            self.para += "\n"
+            self.start_br(attrs)
 
     def end_p(self, attrs): pass
 
@@ -316,6 +330,8 @@ class Handler:
         if self.mode[-1] == 'comment':
             self.comment += data
             return
+        elif self.mode[-1] == 'ignore':
+            return
 
         m = re.search(r"\\bibliography\{([^\}]+)}", data)
         if m:
@@ -324,8 +340,10 @@ class Handler:
                 if not self.biblio_fd:
                     self.biblio_fd = open("%s.bib" % m.group(1),"w")
 
+                self.para = re.sub("[\x80-\xFF]","", self.para)
+                self.para = re.sub("([\\_$&])", r"\\\1", self.para)
                 self.biblio_fd.write(self.para + data)
-                self.para = ''
+                self.para = u''
 
             self.emitter = bibliography_write
             self.out_fd.write(data)
@@ -333,29 +351,28 @@ class Handler:
             self.para += self.escape_latex_chars(data)
             if self.tables:
                 self.tables[-1].data(self.para)
-                self.para = ''
+                self.para = u''
 
     def start_div(self, attrs):
         if get_attr_value(attrs, "id") == "doc-contents":
-            self.para = ''
+            self.para = u''
 
     def end_div(self, attrs):
         if get_attr_value(attrs, "id") == "doc-contents":
             self.emit = False
 
     def start_h1(self, attrs):
-        self.para += r"\title{"
-        self.emit = True
+        self.para += r"\section{"
 
     def end_h1(self, attrs):
         self.para += "}\n"
-        if SETTINGS.get('shorttitle'):
-            self.para+= "\shorttitle{%s}\n" % SETTINGS['shorttitle']
 
-        if SETTINGS.get('abstract'):
-            self.para += "\\abstract{%s}\n" % SETTINGS['abstract']
+    def start_title(self, attrs):
+        self.para = ""
 
-        self.para +="\maketitle\n"
+    def end_title(self, attrs):
+        SETTINGS['title'] = self.para
+        self.emit = True
 
     def start_h2(self, attrs):
         self.para += "\section{"
@@ -402,11 +419,11 @@ class Handler:
 
     def start_ol(self, attrs):
         self.para += r"""
-\begin{enumerate}
+\begin{itemize}
 """
     def end_ol(self,attrs):
         self.para += r"""
-\end{enumerate}
+\end{itemize}
 """
     def start_ul(self, attrs):
         self.para += r"""
@@ -423,6 +440,18 @@ class Handler:
     def end_li(self, attrs):
         self.para += "\n"
 
+    def start_script(self, attrs):
+        self.mode.append('ignore')
+
+    def end_script(self, attrs):
+        self.mode.pop(-1)
+
+    def start_style(self, attrs):
+        self.mode.append('ignore')
+
+    def end_style(self, attrs):
+        self.mode.pop(-1)
+
     def start_span(self, attrs):
         cls = get_attr_value(attrs, "class")
         if cls and "comment" in cls:
@@ -436,6 +465,7 @@ class Handler:
                 self.para += "%%%s\n" % line
 
             self.comment = ''
+
 
 name2codepoint = htmlentitydefs.name2codepoint
 name2codepoint['rsquo'] = ord('`')
@@ -456,7 +486,7 @@ class MyHTMLParser(HTMLParser):
         self.h.data(data)
 
     def handle_entityref(self, name):
-        self.handle_data(chr(htmlentitydefs.name2codepoint[name]))
+        self.handle_data(unichr(htmlentitydefs.name2codepoint[name]))
 
     def handle_starttag(self, tag, attrs):
         try:
@@ -486,19 +516,21 @@ parser.add_option("-o", "--output", default = None,
 (options, args) = parser.parse_args()
 
 if options.output:
-    out_fd = open("%s.tex" % options.output,"w")
+    out_fd = codecs.open("%s.tex" % options.output,"w", "utf-8")
 else:
     out_fd = sys.stdout
 
 for arg in args:
-    f = urllib.urlopen(arg)
-    data = f.read()
+    f = urllib2.urlopen(arg)
+    data = f.read().decode("utf-8")
 
     try:
         p = MyHTMLParser(out_fd, arg)
         p.feed(data)
     except Exception, e:
-        print e
+        import traceback
+        print traceback.format_exc()
+
         pdb.post_mortem()
 
     out_fd.write( """\end{document}""")
