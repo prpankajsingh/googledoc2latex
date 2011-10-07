@@ -1,4 +1,4 @@
-import codec
+import codecs
 import urllib2, re, urlparse, htmlentitydefs
 from HTMLParser import HTMLParser
 import pdb
@@ -8,7 +8,8 @@ VERBOSE = 0
 
 SETTINGS = dict(columnwidth = 1,
                 documentclass = 'article',
-#                documentoptions = 'doc,helv,longtable',
+                documentoptions = 'doc,helv,longtable',
+                bibstyle = 'IEEEtran',
                 )
 
 def get_attr_value(attrs, key):
