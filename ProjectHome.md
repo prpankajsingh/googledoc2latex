@@ -1,0 +1,3 @@
+Google doc is an excellent platform for collaboration on scientific papers. However, most of the time we need the output in Latex format. Google Docs does have some very simple formatting outputs doing simple tables, figures (even includes a simple drawing application).
+
+This project aims to automate the conversion of Google Docs to latex. Simple constructs generate fairly simple Latex, but you can just include Latex commands directly in the Google Doc. This way we can use Google Doc as a very simple collaboraive WYSIWYG editor.
